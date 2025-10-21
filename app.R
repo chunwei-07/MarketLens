@@ -190,10 +190,10 @@ server <- function(input, output, session) {
         forecast_arima <- forecast(fit_arima, h = input$forecast_period)
 
         # manually create a clean df for plotting
-        last_date <- last(stock_data()$date)
+        last_date <- dplyr::last(stock_data()$date)
         forecast_dates <- seq.Date(from = last_date + 1, by = "day", length.out = input$forecast_period)
 
-        forecast_df <- tibble(
+        forecast_df <- tibble::tibble(
             date = forecast_dates,
             point_forecast = as.numeric(forecast_arima$mean),
             lo_95 = as.numeric(forecast_arima$lower[, "95%"]),
@@ -201,7 +201,9 @@ server <- function(input, output, session) {
         )
 
         # calculate error metrics
-        metrics <- accuracy(forecast_arima) %>% as.data.frame() %>% select(RMSE, MAE, MAPE)
+        metrics <- accuracy(forecast_arima) %>%
+            as.data.frame() %>%
+            select(RMSE, MAE, MAPE)
 
         # store results
         forecast_results(list(
