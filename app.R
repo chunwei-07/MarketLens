@@ -305,9 +305,26 @@ server <- function(input, output, session) {
 
     output$error_metrics_table <- renderDT({
         req(forecast_results()$metrics)
+
+        # 1. Round the metrics for readability
+        metrics_df <- forecast_results()$metrics %>%
+            dplyr::mutate(dplyr::across(everything(), ~ round(., 3)))
+
+        # 2. Define custom HTML headers with tooltips
+        col_headers_html <- c(
+            '<span title="Root Mean Squared Error: The standard deviation of the prediction errors. Lower is better.">RMSE</span>',
+            '<span title="Mean Absolute Error: The average absolute difference between the prediction and the actual value. Lower is better.">MAE</span>',
+            '<span title="Mean Absolute Percentage Error: The forecast error in percentage terms. Lower is better.">MAPE</span>'
+        )
+
+        # Apply new headers
+        colnames(metrics_df) <- col_headers_html
+
         datatable(
-            forecast_results()$metrics,
+            metrics_df,
             class = "table table-dark table-striped",
+            # 3. Allow HTML to be rendered
+            escape = FALSE,
             options = list(dom = "t"),
             rownames = FALSE
         )
