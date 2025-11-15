@@ -7,6 +7,7 @@ library(htmltools)
 library(forecast)
 library(DT)
 library(prophet)
+library(rmarkdown)
 
 # --- UI DEFINITION ---
 ui <- page_navbar(
@@ -91,8 +92,49 @@ ui <- page_navbar(
         )
     ),
 
-    nav_panel("Analysis"),
-    nav_panel("Reports"),
+    nav_panel(
+        title = "Analysis",
+        layout_columns(
+            col_widths = c(4, 4, 4, 12),   # define widths: 3 boxes on top, 1 chart below
+            # value boxes for key indicators
+            value_box(
+                title = "Relative Strength Index (14-days)",
+                value = textOutput("rsi_value"),
+                showcase = bsicons::bs_icon("graph-up-arrow"),
+                theme = "bg-gradient-green-blue"
+            ),
+            value_box(
+                title = "Moving Average Convergence Divergence",
+                value = textOutput("macd_value"),
+                showcase = bsicons::bs_icon("sign-turn-slight-right"),
+                theme = "bg-gradient-green-blue"
+            ),
+            value_box(
+                title = "Simple Moving Average (50-day)",
+                value = textOutput("sma_value"),
+                showcase = bsicons::bs_icon("rulers"),
+                theme = "bg-gradient-green-blue"
+            ),
+            # card for the main chart
+            card(
+                card_header("Candlestick Chart with Moving Averages"),
+                card_body(padding = "10px", plotlyOutput("analysis_plot"))
+            )
+        )
+    ),
+
+    nav_panel(
+        title = "Reports",
+        card(
+            card_header("Generate and Download Report"),
+            card_body(
+                p("Click the button below to generate a PDF report based on the currently analyzed stock and generated forecast."),
+                p("Note: A forecast must be generated in the 'Forecasting' tab before a report can be created."),
+                downloadButton("download_report", "Download as PDF", class = "btn-primary")
+            )
+        )
+    ),
+
     nav_spacer(),
     nav_menu(
         title = "Settings",
@@ -329,6 +371,106 @@ server <- function(input, output, session) {
             rownames = FALSE
         )
     })
+
+    # analysis logic
+    # create a reactive expression that calculates indicators when stock_data() changes
+    indicator_data <- reactive({
+        req(stock_data())
+
+        # validation check
+        # check if we have enough data for the longest indicator (SMA 200)
+        if (nrow(stock_data()) < 200) {
+            return(NULL)
+        }
+
+        # if check passes, proceed with calculations
+        stock_data() %>%
+            tq_mutate(select = close, mutate_fun = RSI, n = 14, col_rename = "rsi") %>%
+            tq_mutate(select = close, mutate_fun = MACD, n_fast = 12, n_slow = 26, n_sig = 9, col_rename = c("macd", "macd_signal")) %>%
+            tq_mutate(select = close, mutate_fun = SMA, n = 50, col_rename = "sma50") %>%
+            tq_mutate(select = close, mutate_fun = SMA, n = 200, col_rename = "sma200")
+    })
+
+    # render the main analysis plot
+    output$analysis_plot <- renderPlotly({
+        if (is.null(indicator_data())) {
+            return(
+                plotly_empty(type = "scatter", mode = "markers") %>%
+                    layout(
+                        title = list(
+                            text = "Not enough data for analysis.<br>Please select a date range of at least 200 trading days.",
+                            y = 0.5
+                        ),
+                        paper_bgcolor = "#1A2420", plot_bgcolor = "#121A16", font = list(color = "#FFFFFF")
+                    )
+            )
+        }
+
+        plot_ly(
+            data = indicator_data(),
+            x = ~date, type = "candlestick",
+            open = ~open, close = ~close, high = ~high, low = ~low,
+            name = "Price"
+        ) %>%
+        add_lines(x = ~date, y = ~sma50, name = "SMA (50)", line = list(color = "#E69F00", width = 1.5)) %>%
+        add_lines(x = ~date, y = ~sma200, name = "SMA (200)", line = list(color = "#56B4E9", width = 1.5)) %>%
+        layout(
+            title = "Price Analysis",
+            paper_bgcolor = "#1A2420", plot_bgcolor = "#121A16", font = list(color = "#FFFFFF"),
+            xaxis = list(title = "Date", gridcolor = "rgba(255,255,255,0.1)"),
+            yaxis = list(title = "Price", gridcolor = "rgba(255,255,255,0.1)"),
+            legend = list(orientation = "h", x = 0.5, xanchor = "center", y = 1.1)
+        )
+    })
+
+    # render the value box output
+    output$rsi_value <- renderText({
+        if (is.null(indicator_data())) return("N/A")
+        # get the most recent RSI value and format it
+        latest_rsi <- dplyr::last(indicator_data()$rsi)
+        round(latest_rsi, 2)
+    })
+
+    output$macd_value <- renderText({
+        if (is.null(indicator_data())) return("N/A")
+        latest_macd <- dplyr::last(indicator_data()$macd)
+        latest_signal <- dplyr::last(indicator_data()$macd_signal)
+        # indicate if MACD is above or below its signal line
+        ifelse(latest_macd > latest_signal, "Bullish", "Bearish")
+    })
+
+    output$sma_value <- renderText({
+        if (is.null(indicator_data())) return("N/A")
+        latest_sma <- dplyr::last(indicator_data()$sma50)
+        # format as currency
+        scales::dollar(latest_sma, accuracy = 0.01)
+    })
+
+    # reporting logic
+    output$download_report <- downloadHandler(
+        filename = function() {
+            paste0("MarketLens_Report_", input$ticker, "_", Sys.Date(), ".pdf")
+        },
+        content = function(file) {
+            # Show a progress indicator to user
+            showNotification("Generating report...", type = "message", duration = 10)
+
+            # Define the parameters to pass to the Rmd file
+            params <- list(
+                ticker = input$ticker,
+                stock_data = stock_data(),
+                forecast_results = forecast_results()
+            )
+
+            # Render the R Markdown file
+            rmarkdown::render(
+                "report_template.Rmd",
+                output_file = file,
+                params = params,
+                envir = new.env(parent = globalenv())   # use a clean env
+            )
+        }
+    )
 }
 
 # --- RUN APP ---

@@ -1,0 +1,35 @@
+---
+title: "MarketLens Stock Analysis Report"
+output: pdf_document
+params:
+    ticker: "AAPL"
+    stock_data: NULL
+    forecast_results: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+```
+
+## Stock Analysis for `r params$ticker`
+
+This report provides a summary of the historical performance and forecast for the stock ticker **`r params$ticker`**.
+The analysis covers the period from `r min(params$stock_data$date)` to `r max(params$stock_data$date)`.
+
+## Historical Price Chart
+
+Here is the historical performance of the adjusted closing price.
+
+```{r price_chart}
+ggplot(params$stock_data, aes(x = date, y = adjusted)) +
+    geom_line(color = "#39a263") +
+    labs(
+        title = paste("Historical Adjusted Price for", params$ticker),
+        x = "Date",
+        y = "Adjusted Price"
+    ) +
+    theme_minimal()
+```
