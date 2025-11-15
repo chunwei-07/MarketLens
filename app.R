@@ -6,6 +6,7 @@ library(tidyquant)
 library(htmltools)
 library(forecast)
 library(DT)
+library(prophet)
 
 # --- UI DEFINITION ---
 ui <- page_navbar(
@@ -178,38 +179,76 @@ server <- function(input, output, session) {
     # forecasting logic
     observeEvent(input$generate_forecast, {
         req(stock_data())
-        showNotification("Generating forecast, this may take a moment...", type = "message", duration = 5)
+        showNotification(paste("Generating", input$model_choice, "forecast..."), type = "message", duration = 5)
 
-        # prepare data for modeling
-        ts_data <- ts(stock_data()$adjusted, frequency = 252)   # 252 trading days / yr
+        # modeling
+        # ARIMA model
+        if (input$model_choice == "arima") {
+            # prepare data for modeling
+            ts_data <- ts(stock_data()$adjusted, frequency = 252)   # 252 trading days / yr
 
-        # fit ARIMA model
-        fit_arima <- auto.arima(ts_data, stepwise = FALSE, approximation = FALSE)
+            # fit ARIMA model
+            fit_arima <- auto.arima(ts_data, stepwise = FALSE, approximation = FALSE)
 
-        # generate forecast
-        forecast_arima <- forecast(fit_arima, h = input$forecast_period)
+            # generate forecast
+            forecast_arima <- forecast(fit_arima, h = input$forecast_period)
 
-        # manually create a clean df for plotting
-        last_date <- dplyr::last(stock_data()$date)
-        forecast_dates <- seq.Date(from = last_date + 1, by = "day", length.out = input$forecast_period)
+            # manually create a clean df for plotting
+            last_date <- dplyr::last(stock_data()$date)
+            forecast_dates <- seq.Date(from = last_date + 1, by = "day", length.out = input$forecast_period)
 
-        forecast_df <- tibble::tibble(
-            date = forecast_dates,
-            point_forecast = as.numeric(forecast_arima$mean),
-            lo_95 = as.numeric(forecast_arima$lower[, "95%"]),
-            hi_95 = as.numeric(forecast_arima$upper[, "95%"])
-        )
+            forecast_df <- tibble::tibble(
+                date = forecast_dates,
+                point_forecast = as.numeric(forecast_arima$mean),
+                lo_95 = as.numeric(forecast_arima$lower[, "95%"]),
+                hi_95 = as.numeric(forecast_arima$upper[, "95%"])
+            )
 
-        # calculate error metrics
-        metrics <- accuracy(forecast_arima) %>%
-            as.data.frame() %>%
-            select(RMSE, MAE, MAPE)
+            # calculate error metrics
+            metrics <- accuracy(forecast_arima) %>%
+                as.data.frame() %>%
+                select(RMSE, MAE, MAPE)
 
-        # store results
-        forecast_results(list(
-            data = forecast_df,
-            metrics = metrics
-        ))
+            # store results
+            forecast_results(list(
+                data = forecast_df,
+                metrics = metrics
+            ))
+
+        } else if (input$model_choice == "prophet") {
+            # prepare data for prophet
+            prophet_data <- stock_data() %>%
+                dplyr::select(date, adjusted) %>%
+                dplyr::rename(ds = date, y = adjusted)
+
+            # fit the prophet model
+            m <- prophet(prophet_data)
+            future <- make_future_dataframe(m, periods = input$forecast_period)
+            forecast_prophet <- predict(m, future)
+
+            # extract forecast data and metrics
+            forecast_df <- forecast_prophet %>%
+                dplyr::select(ds, yhat, yhat_lower, yhat_upper) %>%
+                dplyr::rename(
+                    date = ds,
+                    point_forecast = yhat,
+                    lo_95 = yhat_lower,
+                    hi_95 = yhat_upper
+                ) %>%
+                dplyr::filter(date > dplyr::last(stock_data()$date))   # keep only future dates
+
+            # manual calculation for error metrics
+            actuals <- prophet_data$y
+            fitted_values <- head(forecast_prophet$yhat, length(actuals))
+
+            rmse_val <- sqrt(mean((actuals - fitted_values)^2))
+            mae_val <- mean(abs(actuals - fitted_values))
+            mape_val <- mean(abs((actuals - fitted_values) / actuals)) * 100
+
+            metrics <- tibble::tibble(RMSE = rmse_val, MAE = mae_val, MAPE = mape_val)
+
+            forecast_results(list(data = forecast_df, metrics = metrics))
+        }
     })
 
     output$forecast_plot <- renderPlotly({
