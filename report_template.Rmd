@@ -33,3 +33,37 @@ ggplot(params$stock_data, aes(x = date, y = adjusted)) +
     ) +
     theme_minimal()
 ```
+
+## Forecast Analysis
+
+A short-term forecast was generated for the next period.
+
+```{r forecast_data}
+# Combine historical and forecast data for plotting
+historical_df <- params$stock_data %>% select(date, adjusted) %>% mutate(type = "Actual")
+forecast_df <- params$forecast_results$data %>%
+    select(date, point_forecast) %>%
+    rename(adjusted = point_forecast) %>%
+    mutate(type = "Forecast")
+
+combined_df <- bind_rows(historical_df, forecast_df)
+
+ggplot(combined_df, aes(x = date, y = adjusted, color = type)) +
+    geom_line() +
+    scale_color_manual(values = c("Actual" = "black", "Forecast" = "#39a263")) +
+    labs(
+        title = paste("Forecast for", params$ticker),
+        x = "Date",
+        y = "Adjusted Price",
+        color = "Data Type"
+    ) +
+    theme_minimal()
+```
+
+## Model Performance Metrics
+
+The following error metrics were calculated for the forecast model. Lower values are generally better.
+
+```{r metrics_table}
+kable(params$forecast_results$metrics, caption = "Forecast Error Metrics", digits = 3)
+```

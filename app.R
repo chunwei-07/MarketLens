@@ -8,25 +8,33 @@ library(forecast)
 library(DT)
 library(prophet)
 library(rmarkdown)
+library(httr2)
 
 # --- UI DEFINITION ---
+light_theme <- bslib::bs_theme(
+    version = 5,
+    bootswatch = "zephyr",
+    base_font = font_google("Manrope"),
+    primary = "#39a263"
+)
+
+dark_theme <- bslib::bs_theme(
+    version = 5,
+    bootswatch = "darkly",
+    base_font = font_google("Inter"),
+    primary = "#39a263", bg = "#121A16", fg = "#FFFFFF",
+    "input-bg" = "#1A2420", "card-bg" = "#1A2420", "input-color" = "#FFFFFF"
+)
+
 ui <- page_navbar(
     title = "MarketLens",
-    theme = bs_theme(
-        version = 5,
-        bootswatch = "darkly",
-        base_font = font_google("Manrope"),
-        primary = "#39a263",
-        bg = "#121A16",
-        fg = "#FFFFFF",
-        "input-bg" = "#1A2420",
-        "card-bg" = "#1A2420",
-        "input-color" = "#FFFFFF"
-    ),
-
+    theme = dark_theme,
     header = tags$head(
         tags$style(HTML("
-            .navbar-brand, .navbar-nav .nav-link, .input-group-text {
+            /* Dark Theme Overrides */
+            [data-bs-theme='dark'] .navbar-brand, 
+            [data-bs-theme='dark'] .navbar-nav .nav-link, 
+            [data-bs-theme='dark'] .input-group-text {
                 color: white !important;
             }
         "))
@@ -85,9 +93,19 @@ ui <- page_navbar(
                 card_header("Forecast Plot"),
                 card_body(padding = "10px", plotlyOutput("forecast_plot"))
             ),
-            card(
-                card_header("Error Metrics"),
-                card_body(padding = "10px", DTOutput("error_metrics_table"))
+            layout_columns(
+                col_widths = c(6, 6),
+                card(
+                    card_header("Error Metrics"),
+                    card_body(padding = "10px", DTOutput("error_metrics_table"))
+                ),
+                card(
+                    card_header("AI Analyst Insight (Powered by Gemini)"),
+                    card_body(
+                        padding = "15px",
+                        uiOutput("ai_commentary_ui")
+                    )
+                )
             )
         )
     ),
@@ -139,17 +157,33 @@ ui <- page_navbar(
     nav_menu(
         title = "Settings",
         align = "right",
-        nav_panel("Preferences"),
+        nav_panel(
+            title = "Preferences",
+            card(
+                card_header("Theme Settings"),
+                card_body(
+                    shiny::checkboxInput("theme_switch", "Enable Dark Mode", value = TRUE)
+                )
+            )
+        ),
         nav_panel("Alerts")
     )
 )
 
 # --- SERVER DEFINITION ---
 server <- function(input, output, session) {
+
+    # theme switcher logic
+    observeEvent(input$theme_switch, {
+        session$setCurrentTheme(
+            if (isTRUE(input$theme_switch)) dark_theme else light_theme
+        )
+    })
     
     # reactive data storage
     stock_data <- reactiveVal(NULL)
     forecast_results <- reactiveVal(NULL)
+    ai_insight <- reactiveVal(NULL)
 
     # dashboard logic
     observeEvent(input$analyze, {
@@ -221,6 +255,7 @@ server <- function(input, output, session) {
     # forecasting logic
     observeEvent(input$generate_forecast, {
         req(stock_data())
+        ai_insight(NULL)
         showNotification(paste("Generating", input$model_choice, "forecast..."), type = "message", duration = 5)
 
         # modeling
@@ -290,6 +325,56 @@ server <- function(input, output, session) {
             metrics <- tibble::tibble(RMSE = rmse_val, MAE = mae_val, MAPE = mape_val)
 
             forecast_results(list(data = forecast_df, metrics = metrics))
+        }
+
+        # AI generation
+        api_key <- Sys.getenv("GEMINI_API_KEY")
+
+        if (api_key != "") {
+            showNotification("Asking Gemini for insights...", type = "message", duration = 4)
+
+            # construct the prompt
+            res <- forecast_results()
+            ticker <- input$ticker
+            current_price <- round(dplyr::last(stock_data()$adjusted), 2)
+            future_price <- round(dplyr::last(res$data$point_forecast), 2)
+            change_pct <- round(((future_price - current_price) / current_price) * 100, 2)
+            trend <- ifelse(change_pct > 0, "UP", "DOWN")
+
+            prompt_text <- glue::glue(
+                "Act as a senior financial analyst.
+                Stock: {ticker}.
+                Current Price: ${current_price}.
+                Forecast ({input$forecast_period} days): ${future_price} ({trend} {change_pct}%).
+                Model used: {toupper(input$model_choice)}.
+                RMSE Error: {round(res$metrics$RMSE, 2)}.
+
+                Write a brief, professional 3-sentence summary of this forecase.
+                Mention the trend and the model's confidence based on the RMSE (lower is better).
+                Do not give financial advice."
+            )
+
+            # call gemini API
+            tryCatch({
+                request("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent") %>%
+                    req_url_query(key = api_key) %>%
+                    req_headers("Content-Type" = "application/json") %>%
+                    req_body_json(list(
+                        contents = list(list(parts = list(list(text = prompt_text))))
+                    )) %>%
+                    req_perform() %>%
+                    resp_body_json() -> response
+
+                # extract text
+                generated_text <- response$candidates[[1]]$content$parts[[1]]$text
+                ai_insight(generated_text)
+
+            }, error = function(e) {
+                ai_insight("Could not connect to Gemini. Check API Key.")
+                print(e)
+            })
+        } else {
+            ai_insight("Gemini API Key not found. Use Sys.setenv(GEMINI_API_KEY = '...')")
         }
     })
 
@@ -370,6 +455,13 @@ server <- function(input, output, session) {
             options = list(dom = "t"),
             rownames = FALSE
         )
+    })
+
+    output$ai_commentary_ui <- renderUI({
+        if (is.null(ai_insight())) {
+            return(div(class = "text-muted", "Generate a forecast to see AI insights."))
+        }
+        markdown(ai_insight())
     })
 
     # analysis logic
